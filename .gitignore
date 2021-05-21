@@ -30,6 +30,12 @@
 *.exe
 *.out
 *.app
+
+/Debug/*.*
+/Release/*.*
+
+.vs
+
 Task.txt
 DCFileWatcher.log
 DCFileWatcher.ini
