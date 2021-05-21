@@ -11,6 +11,8 @@
     #define new DEBUG_NEW
 #endif
 
+const static wchar_t * g_sDelete = L"delete_";
+
 CDCReadDirChangesImpl::CDCReadDirChangesImpl(const wchar_t *sHotPath, const wchar_t *sBcpPath, const wchar_t *sLogFile) 
     : m_sHotPath(sHotPath), m_sBcpPath(sBcpPath), m_sLogFile(sLogFile)
 {
@@ -165,6 +167,20 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
                         std::wstring sInfo;
                         if (!sOldFileName.empty()) {
                             sInfo = sOperationText + L": " + sOldFileName + L" -> "+ sFileName;
+                            
+                            if (sFileName.rfind(g_sDelete, 0) == 0) {
+                                std::filesystem::path pathToDelete(sHotPath);
+                                pathToDelete /= sFileName;
+                                std::filesystem::remove(pathToDelete);
+
+                                std::filesystem::path pathToDeleteBcp(sBcpPath);
+                                pathToDeleteBcp /= sOldFileName;
+                                pathToDeleteBcp += ".bak";
+                                std::filesystem::remove(pathToDeleteBcp);
+
+                                bDeleted = true;
+                                sInfo = std::wstring(L"The file was deleted because of \"delete_\" prefix: ") + sFileName + L" Backup file also was deleted: " + pathToDeleteBcp.c_str();
+                            }
                             sOldFileName.clear();
                         }
                         else {
@@ -174,6 +190,7 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
                         if (!bDeleted) {
                             std::filesystem::copy(pathSrc, pathTrg, std::filesystem::copy_options::update_existing);
                         }
+
                         CDCOut::OutInfoNoConsole(sLogFile, sInfo.c_str());
                     }
                 }
