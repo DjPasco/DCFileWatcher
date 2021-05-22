@@ -1,7 +1,11 @@
 #include "DCReadDirChangesImpl.h"
 
 #include <iostream>
+#include <sstream>
+#include <locale>
+#include <iomanip>
 #include <filesystem>
+#include <chrono>
 
 #include "fileapi.h"
 
@@ -12,6 +16,67 @@
 #endif
 
 const static wchar_t * g_sDelete = L"delete_";
+
+namespace time_utils
+{
+    std::string currentISO8601TimeUTC() {
+  auto now = std::chrono::system_clock::now();
+  auto itt = std::chrono::system_clock::to_time_t(now);
+  std::ostringstream ss;
+  //ss << std::put_time(gmtime(&itt), "%FT%TZ");
+  ss << std::put_time(gmtime(&itt), "%Y%m%d %H%M%S");
+  return ss.str();
+}
+    bool GetTimeFromFile(const wchar_t *sFileName, std::tm &timeToDelete)
+    {
+        std::wstring sFileName_(sFileName);
+        size_t nPos = sFileName_.find(L"_", 0);
+        if (std::wstring::npos == nPos) {
+            return false;
+        }
+
+        sFileName_.erase(0, nPos+1);
+
+        nPos = sFileName_.find(L"_", nPos);
+        if (std::wstring::npos == nPos) {
+            return false;
+        }
+
+        std::wstring sTime = sFileName_.substr(0, nPos);
+        {
+            std::locale loc;
+            std::wistringstream ss(sTime.c_str());
+            ss >> std::get_time(&timeToDelete, L"%Y-%m-%d %H-%M-%S");
+        
+            if (ss.fail()) {
+                return false;
+            }
+        }
+
+        //time_t now;
+        //time(&now);
+        //char buf[sizeof "2011-10-08T07:07:09Z"];
+        //strftime(buf, sizeof buf, "%FT%TZ", gmtime(&now));
+        //// this will work too, if your compiler doesn't support %F or %T:
+        ////strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+        //std::cout << buf << "\n";
+
+        return true;
+    }
+}
+
+void FileDeleteThread(const wchar_t *sFilePath, const wchar_t *sFileBcpPath, const wchar_t *sLogFile, std::tm *timeToDelete)
+{
+    std::time_t tt = std::mktime (timeToDelete);
+    std::chrono::system_clock::time_point timePoint = std::chrono::system_clock::from_time_t(tt);
+    std::time_t t = std::chrono::system_clock::to_time_t(timePoint);
+    std::cout << std::ctime(&t) << std::endl;
+    std::this_thread::sleep_until(timePoint);
+    std::filesystem::remove(sFilePath);
+    std::filesystem::remove(sFileBcpPath);
+    std::wstring sInfo = std::wstring(L"The file was deleted because of \"delete_ISODATETIME\" prefix: ") + sFilePath + L" Backup file also was deleted: " + sFileBcpPath;
+    CDCOut::OutInfoNoConsole(sLogFile, sInfo.c_str());
+}
 
 CDCReadDirChangesImpl::CDCReadDirChangesImpl(const wchar_t *sHotPath, const wchar_t *sBcpPath, const wchar_t *sLogFile) 
     : m_sHotPath(sHotPath), m_sBcpPath(sBcpPath), m_sLogFile(sLogFile)
@@ -171,15 +236,27 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
                             if (sFileName.rfind(g_sDelete, 0) == 0) {
                                 std::filesystem::path pathToDelete(sHotPath);
                                 pathToDelete /= sFileName;
-                                std::filesystem::remove(pathToDelete);
-
+                                std::tm timeToDelete = { 0 };
+                                const bool bFindTime = time_utils::GetTimeFromFile(pathToDelete.c_str(), timeToDelete);
+                                
                                 std::filesystem::path pathToDeleteBcp(sBcpPath);
                                 pathToDeleteBcp /= sOldFileName;
                                 pathToDeleteBcp += ".bak";
-                                std::filesystem::remove(pathToDeleteBcp);
 
                                 bDeleted = true;
-                                sInfo = std::wstring(L"The file was deleted because of \"delete_\" prefix: ") + sFileName + L" Backup file also was deleted: " + pathToDeleteBcp.c_str();
+
+                                if (!bFindTime) {
+                                    std::filesystem::remove(pathToDelete);
+                                    std::filesystem::remove(pathToDeleteBcp);
+                                    sInfo = std::wstring(L"The file was deleted because of \"delete_\" prefix: ") + sFileName + L" Backup file also was deleted: " + pathToDeleteBcp.c_str();
+                                }
+                                else {
+                                    const wchar_t *sPath = pathToDelete.c_str();
+                                    const wchar_t *sPathFile = pathToDeleteBcp.c_str();
+                                    std::thread threadDeleteFile(&FileDeleteThread, sPath, sPathFile, sLogFile, &timeToDelete);
+                                    threadDeleteFile.detach();
+                                    sInfo = std::wstring(L"The file will be deleted later because of \"delete_ISODATETIME\" prefix: ") + sFileName + L" Backup file also was deleted: " + pathToDeleteBcp.c_str();
+                                }
                             }
                             sOldFileName.clear();
                         }
