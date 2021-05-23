@@ -161,7 +161,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DCReadDirChangesImpl.h" />
+    <ClInclude Include="FilePathUtils.h" />
+    <ClInclude Include="IniFileUtils.h" />
     <ClInclude Include="LogImpl.h" />
+    <ClInclude Include="TimeUtils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

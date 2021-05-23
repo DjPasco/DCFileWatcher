@@ -1,15 +1,14 @@
 #include "DCReadDirChangesImpl.h"
 
-#include <iostream>
-#include <sstream>
-#include <locale>
-#include <iomanip>
-#include <filesystem>
-#include <chrono>
+#include "iostream"
+#include "chrono"
 
 #include "fileapi.h"
 
 #include "LogImpl.h"
+#include "TimeUtils.h"
+#include "FilePathUtils.h"
+#include "IniFileUtils.h"
 
 #ifdef _DEBUG
     #define new DEBUG_NEW
@@ -17,71 +16,18 @@
 
 const static wchar_t * g_sDelete = L"delete_";
 
-namespace time_utils
+CDCReadDirChangesImpl::CDCReadDirChangesImpl(const wchar_t *sHotPath, const wchar_t *sBcpPath, const wchar_t *sLogFile, const std::vector<std::pair<std::wstring, std::wstring>> &arrToDelete) 
+    : m_sHotPath(sHotPath), m_sBcpPath(sBcpPath), m_sLogFile(sLogFile), m_arrToDelete(arrToDelete)
 {
-    std::string currentISO8601TimeUTC() {
-  auto now = std::chrono::system_clock::now();
-  auto itt = std::chrono::system_clock::to_time_t(now);
-  std::ostringstream ss;
-  //ss << std::put_time(gmtime(&itt), "%FT%TZ");
-  ss << std::put_time(gmtime(&itt), "%Y%m%d %H%M%S");
-  return ss.str();
-}
-    bool GetTimeFromFile(const wchar_t *sFileName, std::tm &timeToDelete)
-    {
-        std::wstring sFileName_(sFileName);
-        size_t nPos = sFileName_.find(L"_", 0);
-        if (std::wstring::npos == nPos) {
-            return false;
-        }
-
-        sFileName_.erase(0, nPos+1);
-
-        nPos = sFileName_.find(L"_", nPos);
-        if (std::wstring::npos == nPos) {
-            return false;
-        }
-
-        std::wstring sTime = sFileName_.substr(0, nPos);
-        {
-            std::locale loc;
-            std::wistringstream ss(sTime.c_str());
-            ss >> std::get_time(&timeToDelete, L"%Y-%m-%d %H-%M-%S");
-        
-            if (ss.fail()) {
-                return false;
+    for (const auto &pair : m_arrToDelete) {
+        if (std::filesystem::exists(pair.first)) {
+            std::tm timeToDelete = { 0 };
+            const bool bFindTime = time_utils::GetTimeFromFilePath(pair.first.c_str(), timeToDelete);
+            if (bFindTime) {
+                StartFileDeleteThread(pair.first, pair.second, m_sLogFile, timeToDelete, false);
             }
         }
-
-        //time_t now;
-        //time(&now);
-        //char buf[sizeof "2011-10-08T07:07:09Z"];
-        //strftime(buf, sizeof buf, "%FT%TZ", gmtime(&now));
-        //// this will work too, if your compiler doesn't support %F or %T:
-        ////strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
-        //std::cout << buf << "\n";
-
-        return true;
     }
-}
-
-void FileDeleteThread(const wchar_t *sFilePath, const wchar_t *sFileBcpPath, const wchar_t *sLogFile, std::tm *timeToDelete)
-{
-    std::time_t tt = std::mktime (timeToDelete);
-    std::chrono::system_clock::time_point timePoint = std::chrono::system_clock::from_time_t(tt);
-    std::time_t t = std::chrono::system_clock::to_time_t(timePoint);
-    std::cout << std::ctime(&t) << std::endl;
-    std::this_thread::sleep_until(timePoint);
-    std::filesystem::remove(sFilePath);
-    std::filesystem::remove(sFileBcpPath);
-    std::wstring sInfo = std::wstring(L"The file was deleted because of \"delete_ISODATETIME\" prefix: ") + sFilePath + L" Backup file also was deleted: " + sFileBcpPath;
-    CDCOut::OutInfoNoConsole(sLogFile, sInfo.c_str());
-}
-
-CDCReadDirChangesImpl::CDCReadDirChangesImpl(const wchar_t *sHotPath, const wchar_t *sBcpPath, const wchar_t *sLogFile) 
-    : m_sHotPath(sHotPath), m_sBcpPath(sBcpPath), m_sLogFile(sLogFile)
-{
-    //
 }
 
 CDCReadDirChangesImpl::~CDCReadDirChangesImpl()
@@ -92,6 +38,35 @@ CDCReadDirChangesImpl::~CDCReadDirChangesImpl()
     if (INVALID_HANDLE_VALUE != m_hDir) {
         CloseHandle(m_hDir);
     }
+
+    SaveNotDeletedFiles();
+}
+
+void CDCReadDirChangesImpl::StartFileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete, bool bAddToArr)
+{
+    std::thread threadDeleteFile(&CDCReadDirChangesImpl::FileDeleteThread, this, sFilePath, sFileBcpPath, sLogFile, timeToDelete);
+    threadDeleteFile.detach();
+    if (bAddToArr) {
+        m_arrToDelete.push_back(std::make_pair(sFilePath, sFileBcpPath));
+    }
+}
+
+void CDCReadDirChangesImpl::FileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete)
+{
+    const std::time_t tTime = std::mktime(&timeToDelete);
+    const std::chrono::system_clock::time_point timePoint = std::chrono::system_clock::from_time_t(tTime);
+    std::this_thread::sleep_until(timePoint);
+    const bool bRetFile = std::filesystem::remove(sFilePath);
+    const bool bRetBcp  = std::filesystem::remove(sFileBcpPath);
+    std::wstring sInfo;
+    if (bRetFile && bRetBcp) {
+        sInfo = std::wstring(L"The file was deleted because of \"delete_ISODATETIME\" prefix: ") + sFilePath + L" Backup file also was deleted: " + sFileBcpPath;
+    }
+    else {
+        sInfo = std::wstring(L"The delete operation on file ") + sFilePath + L" failed.";
+    }
+
+    CDCOut::OutInfoNoConsole(sLogFile.c_str(), sInfo.c_str());
 }
 
 void CDCReadDirChangesImpl::ApplyLogFileFilter(const wchar_t *sInput)
@@ -125,8 +100,18 @@ void CDCReadDirChangesImpl::Start()
     threadInput    = std::thread(&CDCReadDirChangesImpl::WaitForInputThread, this);
 }
 
-void CDCReadDirChangesImpl::Quit() {
+void CDCReadDirChangesImpl::Quit() 
+{
     m_bRunning = false;
+}
+
+void CDCReadDirChangesImpl::SaveNotDeletedFiles() 
+{
+    for (const auto &pair : m_arrToDelete) {
+        if (std::filesystem::exists(pair.first)) {
+            ini_file_utils::AppendFileToDelete(pair.first.c_str(), pair.second.c_str(), m_sLogFile.c_str());
+        }
+    }
 }
 
 void CDCReadDirChangesImpl::WaitForInputThread()
@@ -176,99 +161,40 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
             FILE_NOTIFY_INFORMATION *pEvent = (FILE_NOTIFY_INFORMATION*)change_buf;
 
             for (;;) {
-                DWORD name_len = pEvent->FileNameLength / sizeof(wchar_t);
-                std::wstring sFileName;
-                sFileName.assign(pEvent->FileName, name_len);
-
                 std::wstring sOperationText;
+                std::wstring sFileName;
                 bool bDeleted(false);
                 bool bRenamedOld(false);
-                                    
-                switch(pEvent->Action)
-                {
-                    case FILE_ACTION_ADDED: 
-                    {
-                        sOperationText = L"The file was added to the directory"; 
-                    }
-                    break; 
-                    case FILE_ACTION_REMOVED: 
-                    {
-                        sOperationText = L"The file was removed from the directory";
-                        bDeleted = true;
-                    }
-                    break; 
-                    case FILE_ACTION_MODIFIED: 
-                    {
-                        sOperationText = L"The file was modified";
-                    }
-                    break; 
-                    case FILE_ACTION_RENAMED_OLD_NAME: 
-                    {
-                        bRenamedOld = true;
-                        sOldFileName = sFileName;
-                    }
-                    break; 
-                    case FILE_ACTION_RENAMED_NEW_NAME: 
-                    {
-                        sOperationText = L"The file was renamed";
-                    }
-                    break;
-                    default:
-                    {
-                        sOperationText = L"Unknown action";
-                    }
-                    break;
-                }
+
+                GetEventInformation(pEvent, sOperationText, bDeleted, bRenamedOld, sOldFileName, sFileName);
 
                 if (!bRenamedOld) {
                     if (sFileName != sLogFile) {
-                        std::filesystem::path pathSrc(sHotPath);
-                        pathSrc /= sFileName;
-
-                        std::filesystem::path pathTrg(sBcpPath);
-                        pathTrg /= sFileName;
-                        pathTrg += ".bak";
+                        const std::filesystem::path pathFile = file_path_utils::MakePath(sHotPath, sFileName.c_str());
+                        const std::filesystem::path pathBcp  = file_path_utils::MakeBcpPath(sBcpPath, sFileName.c_str());
                     
                         std::wstring sInfo;
                         if (!sOldFileName.empty()) {
                             sInfo = sOperationText + L": " + sOldFileName + L" -> "+ sFileName;
                             
                             if (sFileName.rfind(g_sDelete, 0) == 0) {
-                                std::filesystem::path pathToDelete(sHotPath);
-                                pathToDelete /= sFileName;
-                                std::tm timeToDelete = { 0 };
-                                const bool bFindTime = time_utils::GetTimeFromFile(pathToDelete.c_str(), timeToDelete);
-                                
-                                std::filesystem::path pathToDeleteBcp(sBcpPath);
-                                pathToDeleteBcp /= sOldFileName;
-                                pathToDeleteBcp += ".bak";
-
                                 bDeleted = true;
-
-                                if (!bFindTime) {
-                                    std::filesystem::remove(pathToDelete);
-                                    std::filesystem::remove(pathToDeleteBcp);
-                                    sInfo = std::wstring(L"The file was deleted because of \"delete_\" prefix: ") + sFileName + L" Backup file also was deleted: " + pathToDeleteBcp.c_str();
-                                }
-                                else {
-                                    const wchar_t *sPath = pathToDelete.c_str();
-                                    const wchar_t *sPathFile = pathToDeleteBcp.c_str();
-                                    std::thread threadDeleteFile(&FileDeleteThread, sPath, sPathFile, sLogFile, &timeToDelete);
-                                    threadDeleteFile.detach();
-                                    sInfo = std::wstring(L"The file will be deleted later because of \"delete_ISODATETIME\" prefix: ") + sFileName + L" Backup file also was deleted: " + pathToDeleteBcp.c_str();
-                                }
+                                DeleteFileOnPrefix(pathFile, sBcpPath, sLogFile, sOldFileName.c_str(), sInfo, sFileName.c_str());
                             }
+
                             sOldFileName.clear();
                         }
                         else {
                             sInfo = sOperationText + L": " + sFileName;
                         }
 
-                        if (!bDeleted) {
-                            std::filesystem::copy(pathSrc, pathTrg, std::filesystem::copy_options::update_existing);
-                        }
-
                         CDCOut::OutInfoNoConsole(sLogFile, sInfo.c_str());
+
+                        if (!bDeleted) {
+                            std::filesystem::copy(pathFile, pathBcp, std::filesystem::copy_options::update_existing);
+                            const std::wstring sBcpInfo = std::wstring(L"The file backup was created: ") + pathBcp.c_str();
+                            CDCOut::OutInfoNoConsole(sLogFile, sBcpInfo.c_str());
+                        }                        
                     }
                 }
 
@@ -290,5 +216,64 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
                 return;
             }
         }
+    }
+}
+
+void CDCReadDirChangesImpl::GetEventInformation(const FILE_NOTIFY_INFORMATION *pEvent, std::wstring &sOperationText, bool &bDeleted, bool &bRenamedOld, std::wstring &sOldFileName, std::wstring &sFileName)
+{
+    DWORD name_len = pEvent->FileNameLength / sizeof(wchar_t);
+    sFileName.assign(pEvent->FileName, name_len);
+    
+    switch(pEvent->Action)
+    {
+        case FILE_ACTION_ADDED: 
+            {
+                sOperationText = L"The file was added to the directory"; 
+            }
+            break; 
+        case FILE_ACTION_REMOVED: 
+            {
+                sOperationText = L"The file was removed from the directory";
+                bDeleted = true;
+            }
+            break; 
+        case FILE_ACTION_MODIFIED: 
+            {
+                sOperationText = L"The file was modified";
+            }
+            break; 
+        case FILE_ACTION_RENAMED_OLD_NAME: 
+            {
+                bRenamedOld = true;
+                sOldFileName = sFileName; //To have correct backup file path when delete will be required
+            }
+            break; 
+        case FILE_ACTION_RENAMED_NEW_NAME: 
+            {
+                sOperationText = L"The file was renamed";
+            }
+            break;
+        default:
+            {
+                sOperationText = L"Unknown action";
+            }
+            break;
+    }
+}
+
+void CDCReadDirChangesImpl::DeleteFileOnPrefix(const std::filesystem::path &pathFile, const wchar_t *sBcpPath, const wchar_t *sLogFile, const wchar_t *sOldFileName, std::wstring &sInfo, const wchar_t *sFileName)
+{
+    std::tm timeToDelete = {0};
+    const bool bFindTime = time_utils::GetTimeFromFilePath(pathFile.c_str(), timeToDelete);
+    const std::filesystem::path pathToDeleteBcp = file_path_utils::MakeBcpPath(sBcpPath, sOldFileName);
+
+    if (!bFindTime) {
+        std::filesystem::remove(pathFile);
+        std::filesystem::remove(pathToDeleteBcp);
+        sInfo = std::wstring(L"The file was deleted because of \"delete_\" prefix: ") + sFileName + L" Backup file also was deleted: " + pathToDeleteBcp.c_str();
+    }
+    else {
+        StartFileDeleteThread(pathFile, pathToDeleteBcp, sLogFile, timeToDelete, true);
+        sInfo = std::wstring(L"The file will be deleted later because of \"delete_ISODATETIME\" prefix: ") + sFileName + L" Backup file also will be deleted: " + pathToDeleteBcp.c_str();
     }
 }

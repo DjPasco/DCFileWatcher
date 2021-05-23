@@ -26,5 +26,14 @@
     <ClInclude Include="DCReadDirChangesImpl.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="IniFileUtils.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TimeUtils.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="FilePathUtils.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
