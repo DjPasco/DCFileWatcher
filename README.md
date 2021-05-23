@@ -18,3 +18,6 @@
  
 # How to exit
  Enter ":q" to the filter and press enter. Application will be closed.
+ 
+ # Main Window with filter "22:25:23" 
+ ![Imgur Image](https://i.imgur.com/WtAKFXS.png)
