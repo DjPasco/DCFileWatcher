@@ -15,3 +15,6 @@
  Previously entered parameters are saved in the ini file.
  
  DCFileWatcher starts and waits for user input on log file filtering. Just enter filter text and press Enter key. If filter text is empty - all log file will be printed to the screen.
+ 
+# How to exit
+ Enter ":q" to the filter and press enter. Application will be closed.
