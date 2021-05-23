@@ -39,3 +39,5 @@
 Task.txt
 DCFileWatcher.log
 DCFileWatcher.ini
+
+!Bin/DCFileWatcher.exe
