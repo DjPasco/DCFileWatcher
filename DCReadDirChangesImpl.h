@@ -21,8 +21,10 @@ private:
     void ApplyLogFileFilter(const wchar_t *sInput);
     void WaitForInputThread();
     void WatchDirThread(HANDLE hDir, const wchar_t *sHotPath, const wchar_t *sBcpPath, const wchar_t *sLogFile);
-    void FileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete);
-    void StartFileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete, bool bAddToArr);
+    void FileDeleteThreadByTime(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete);
+    void FileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile);
+    void StartFileDeleteThreadByTime(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete, bool bAddToArr);
+    void StartFileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile);
 
 private:
     void GetEventInformation(const FILE_NOTIFY_INFORMATION *pEvent, std::wstring &sOperationText, bool &bDeleted, bool &bRenamedOld, std::wstring &sOldFileName, std::wstring &sFileName);
@@ -30,7 +32,9 @@ private:
 
 private:
     std::atomic<bool> m_bRunning {true};
+    
     HANDLE m_hDir                {nullptr};
+
     std::thread threadWatchDir;
     std::thread threadInput;
 

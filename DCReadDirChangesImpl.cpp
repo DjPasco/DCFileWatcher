@@ -20,11 +20,12 @@ CDCReadDirChangesImpl::CDCReadDirChangesImpl(const wchar_t *sHotPath, const wcha
     : m_sHotPath(sHotPath), m_sBcpPath(sBcpPath), m_sLogFile(sLogFile), m_arrToDelete(arrToDelete)
 {
     for (const auto &pair : m_arrToDelete) {
-        if (std::filesystem::exists(pair.first)) {
+        std::error_code ec;
+        if (std::filesystem::exists(pair.first, ec)) {
             std::tm timeToDelete = { 0 };
             const bool bFindTime = time_utils::GetTimeFromFilePath(pair.first.c_str(), timeToDelete);
             if (bFindTime) {
-                StartFileDeleteThread(pair.first, pair.second, m_sLogFile, timeToDelete, false);
+                StartFileDeleteThreadByTime(pair.first, pair.second, m_sLogFile, timeToDelete, false);
             }
         }
     }
@@ -42,25 +43,43 @@ CDCReadDirChangesImpl::~CDCReadDirChangesImpl()
     SaveNotDeletedFiles();
 }
 
-void CDCReadDirChangesImpl::StartFileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete, bool bAddToArr)
+void CDCReadDirChangesImpl::StartFileDeleteThreadByTime(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete, bool bAddToArr)
 {
-    std::thread threadDeleteFile(&CDCReadDirChangesImpl::FileDeleteThread, this, sFilePath, sFileBcpPath, sLogFile, timeToDelete);
+    std::thread threadDeleteFile(&CDCReadDirChangesImpl::FileDeleteThreadByTime, this, sFilePath, sFileBcpPath, sLogFile, timeToDelete);
     threadDeleteFile.detach();
     if (bAddToArr) {
         m_arrToDelete.push_back(std::make_pair(sFilePath, sFileBcpPath));
     }
 }
 
-void CDCReadDirChangesImpl::FileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete)
+void CDCReadDirChangesImpl::FileDeleteThreadByTime(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile, std::tm timeToDelete)
 {
     const std::time_t tTime = std::mktime(&timeToDelete);
     const std::chrono::system_clock::time_point timePoint = std::chrono::system_clock::from_time_t(tTime);
     std::this_thread::sleep_until(timePoint);
-    const bool bRetFile = std::filesystem::remove(sFilePath);
-    const bool bRetBcp  = std::filesystem::remove(sFileBcpPath);
+    std::error_code ec;
+    const bool bRetFile = std::filesystem::remove(sFilePath, ec);
+    const bool bRetBcp  = std::filesystem::remove(sFileBcpPath, ec);
     std::wstring sInfo;
     if (bRetFile && bRetBcp) {
         sInfo = std::wstring(L"The file was deleted because of \"delete_ISODATETIME\" prefix: ") + sFilePath + L" Backup file also was deleted: " + sFileBcpPath;
+    }
+    else {
+        sInfo = std::wstring(L"The delete operation on file ") + sFilePath + L" failed.";
+    }
+
+    CDCOut::OutInfoNoConsole(sLogFile.c_str(), sInfo.c_str());
+}
+
+void CDCReadDirChangesImpl::FileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile)
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::error_code ec;
+    const bool bRetFile = std::filesystem::remove(sFilePath, ec);
+    const bool bRetBcp  = std::filesystem::remove(sFileBcpPath, ec);
+    std::wstring sInfo;
+    if (bRetFile && bRetBcp) {
+        sInfo = std::wstring(L"The file was deleted because of \"delete_\" prefix: ") + sFilePath + L" Backup file also was deleted: " + sFileBcpPath;
     }
     else {
         sInfo = std::wstring(L"The delete operation on file ") + sFilePath + L" failed.";
@@ -108,7 +127,8 @@ void CDCReadDirChangesImpl::Quit()
 void CDCReadDirChangesImpl::SaveNotDeletedFiles() 
 {
     for (const auto &pair : m_arrToDelete) {
-        if (std::filesystem::exists(pair.first)) {
+        std::error_code ec;
+        if (std::filesystem::exists(pair.first, ec)) {
             ini_file_utils::AppendFileToDelete(pair.first.c_str(), pair.second.c_str(), m_sLogFile.c_str());
         }
     }
@@ -135,7 +155,7 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
     }
 
     OVERLAPPED overlapped;
-    overlapped.hEvent = CreateEvent(NULL, FALSE, 0, NULL);
+    overlapped.hEvent = CreateEvent(NULL, FALSE, 0, NULL);;
 
     uint8_t change_buf[1024];
     BOOL bSuccess = ReadDirectoryChangesW(hDir, change_buf, 1024, TRUE,
@@ -146,13 +166,14 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
         return;
     }
 
+    std::wstring sOldFileName;
+    
     while (true) {
         if (!m_bRunning) {
             return;
         }
             
-        DWORD result = WaitForSingleObject(overlapped.hEvent, 0);
-        std::wstring sOldFileName;
+        DWORD result = WaitForSingleObject(overlapped.hEvent, 200);
 
         if (result == WAIT_OBJECT_0) {
             DWORD bytes_transferred;
@@ -168,6 +189,7 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
 
                 GetEventInformation(pEvent, sOperationText, bDeleted, bRenamedOld, sOldFileName, sFileName);
 
+                // Only do job if it's not old file name action
                 if (!bRenamedOld) {
                     if (sFileName != sLogFile) {
                         const std::filesystem::path pathFile = file_path_utils::MakePath(sHotPath, sFileName.c_str());
@@ -191,10 +213,13 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
                         CDCOut::OutInfoNoConsole(sLogFile, sInfo.c_str());
 
                         if (!bDeleted) {
-                            std::filesystem::copy(pathFile, pathBcp, std::filesystem::copy_options::update_existing);
-                            const std::wstring sBcpInfo = std::wstring(L"The file backup was created: ") + pathBcp.c_str();
-                            CDCOut::OutInfoNoConsole(sLogFile, sBcpInfo.c_str());
-                        }                        
+                            std::error_code ec;
+                            std::filesystem::copy(pathFile, pathBcp, std::filesystem::copy_options::update_existing, ec);
+                            if (!ec) {
+                                const std::wstring sBcpInfo = std::wstring(L"The file backup was created: ") + pathBcp.c_str();
+                                CDCOut::OutInfoNoConsole(sLogFile, sBcpInfo.c_str());
+                            }
+                        }
                     }
                 }
 
@@ -206,7 +231,7 @@ void CDCReadDirChangesImpl::WatchDirThread(HANDLE hDir, const wchar_t *sHotPath,
                     break;
                 }
             }
-      
+
             // Queue the next event
             bSuccess = ReadDirectoryChangesW(hDir, change_buf, 1024, TRUE,
                                              FILE_NOTIFY_CHANGE_FILE_NAME|FILE_NOTIFY_CHANGE_DIR_NAME|FILE_NOTIFY_CHANGE_LAST_WRITE,
@@ -261,19 +286,23 @@ void CDCReadDirChangesImpl::GetEventInformation(const FILE_NOTIFY_INFORMATION *p
     }
 }
 
+void CDCReadDirChangesImpl::StartFileDeleteThread(std::wstring sFilePath, std::wstring sFileBcpPath, std::wstring sLogFile)
+{
+    std::thread threadDeleteFile(&CDCReadDirChangesImpl::FileDeleteThread, this, sFilePath, sFileBcpPath, sLogFile);
+    threadDeleteFile.detach();
+}
+
 void CDCReadDirChangesImpl::DeleteFileOnPrefix(const std::filesystem::path &pathFile, const wchar_t *sBcpPath, const wchar_t *sLogFile, const wchar_t *sOldFileName, std::wstring &sInfo, const wchar_t *sFileName)
 {
     std::tm timeToDelete = {0};
     const bool bFindTime = time_utils::GetTimeFromFilePath(pathFile.c_str(), timeToDelete);
     const std::filesystem::path pathToDeleteBcp = file_path_utils::MakeBcpPath(sBcpPath, sOldFileName);
 
-    if (!bFindTime) {
-        std::filesystem::remove(pathFile);
-        std::filesystem::remove(pathToDeleteBcp);
-        sInfo = std::wstring(L"The file was deleted because of \"delete_\" prefix: ") + sFileName + L" Backup file also was deleted: " + pathToDeleteBcp.c_str();
+    if (bFindTime) {
+        StartFileDeleteThreadByTime(pathFile, pathToDeleteBcp, sLogFile, timeToDelete, true);
+        sInfo = std::wstring(L"The file will be deleted later because of \"delete_ISODATETIME\" prefix: ") + sFileName + L" Backup file also will be deleted: " + pathToDeleteBcp.c_str();
     }
     else {
-        StartFileDeleteThread(pathFile, pathToDeleteBcp, sLogFile, timeToDelete, true);
-        sInfo = std::wstring(L"The file will be deleted later because of \"delete_ISODATETIME\" prefix: ") + sFileName + L" Backup file also will be deleted: " + pathToDeleteBcp.c_str();
+        StartFileDeleteThread(pathFile, pathToDeleteBcp, sLogFile);
     }
 }

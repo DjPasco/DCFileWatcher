@@ -10,24 +10,10 @@
 
 namespace internal
 {
-    // http://www.cplusplus.com/reference/ctime/asctime/ 
-    // do not return the \n at the end (diff. from asctime)
-    static inline wchar_t* asctime_impl(const struct tm *timeptr)
+    static inline wchar_t* GetFormatedTime(const struct tm *timeptr)
     {
-        static const wchar_t wday_name[][4] = {
-        L"Sun", L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat"
-        };
-        static const wchar_t mon_name[][4] = {
-        L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun",
-        L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec"
-        };
-        static wchar_t result[26];
-        swprintf(result, L"%.3s %.3s%3d %.2d:%.2d:%.2d %d",
-        wday_name[timeptr->tm_wday],
-        mon_name[timeptr->tm_mon],
-        timeptr->tm_mday, timeptr->tm_hour,
-        timeptr->tm_min, timeptr->tm_sec,
-        1900 + timeptr->tm_year);
+        static wchar_t result[20];
+        wcsftime(result, 20, L"%Y-%m-%d %H:%M:%S\0", timeptr);
         return result;
     }
 
@@ -51,7 +37,7 @@ public:
             
         time(&rawtime);
         timeinfo = localtime(&rawtime);
-        const wchar_t *sTime = internal::asctime_impl(timeinfo);
+        const wchar_t *sTime = internal::GetFormatedTime(timeinfo);
 
         std::wstring sMsgImpl;
         sMsgImpl += L"[";
