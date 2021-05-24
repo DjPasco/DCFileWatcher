@@ -2,6 +2,7 @@
  DCFileWatcher is a filter written in C++ (on Windows platform) that accepts the hot folder path and backup folder path, backing up any file that is created or modified in the chosen folder.
  
  Application can delete file if the new file name has "delete_" prefix.
+ 
  Application can delete file at specific time if the new file name has "delete_2021-05-24 05-06-15" prefix.
  
 # How to build
